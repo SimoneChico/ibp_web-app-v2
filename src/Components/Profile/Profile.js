@@ -6,9 +6,12 @@ import {
   uploadImage,
   sendNotification, // Import the notification function
 } from "../../Config/FirebaseServices";
-import { useAuth } from "../../AuthContext";
+import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
+import { useAuth } from "../../contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
 import "./Profile.css";
-
+import { addDoc, query, orderBy, limit, getDocs } from "firebase/firestore";
+import { fs, collection } from "../../Config/Firebase"; // Ensure Firebase is initialized
 const defaultImageUrl =
   "https://firebasestorage.googleapis.com/v0/b/lawyer-app-ed056.appspot.com/o/DefaultUserImage.jpg?alt=media&token=3ba45526-99d8-4d30-9cb5-505a5e23eda1";
 
@@ -29,6 +32,19 @@ function Profile() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [showSnackbar, setShowSnackbar] = useState(false);
+  const navigate = useNavigate();
+  const auth = getAuth();
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        // If user is not authenticated, redirect to the login page
+        navigate("/");
+      }
+    });
+
+    return () => unsubscribe(); // Clean up the listener on component unmount
+  }, [auth, navigate]);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -69,19 +85,36 @@ function Profile() {
     return changes;
   };
 
+  const fetchLatestLoginActivity = async (uid) => {
+    const loginActivityRef = collection(fs, "users", uid, "loginActivity");
+    const loginActivityQuery = query(
+      loginActivityRef,
+      orderBy("loginTime", "desc"),
+      limit(1)
+    );
+    const loginActivitySnapshot = await getDocs(loginActivityQuery);
+  
+    if (!loginActivitySnapshot.empty) {
+      const activityData = loginActivitySnapshot.docs[0].data();
+      return {
+        ipAddress: activityData.ipAddress || null,
+        deviceName: activityData.deviceName || null,
+      };
+    }
+    return { ipAddress: null, deviceName: null };
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-
+  
     let updatedData = { ...userData };
-
-    // Remove any invalid keys from updatedData
+    // Remove empty values
     Object.keys(updatedData).forEach((key) => {
-      if (updatedData[key] === "") {
-        delete updatedData[key];
-      }
+      if (updatedData[key] === "") delete updatedData[key];
     });
-
+  
+    // Add profile image with timestamp if provided
     if (profileImage) {
       const now = new Date();
       const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1)
@@ -93,27 +126,56 @@ function Profile() {
         .getSeconds()
         .toString()
         .padStart(2, "0")}`;
-
+      
       const imageUrl = await uploadImage(
         profileImage,
         `profile_images/${currentUser.uid}/profileImage_${timestamp}.png`
       );
       updatedData.photo_url = imageUrl;
     }
-
+  
+    // Add current timestamp for updated_time
+    updatedData.updated_time = new Date();
+  
     try {
-      const changes = findChangedFields(); // Track the changes before updating
+      const changes = findChangedFields();
       await updateUser(currentUser.uid, updatedData);
-
+  
       if (Object.keys(changes).length > 0) {
         const message = `Your profile has been updated. Fields changed: ${Object.keys(
           changes
         ).join(", ")}`;
-
-        // Call sendNotification with the correct parameters
         await sendNotification(message, currentUser.uid, "profile");
       }
-
+  
+      // Fetch latest login activity metadata
+      const { ipAddress, deviceName } = await fetchLatestLoginActivity(
+        currentUser.uid
+      );
+  
+      // Create and clean audit log entry
+      const auditLogEntry = {
+        actionType: "UPDATE",
+        timestamp: new Date(),
+        uid: currentUser?.uid || null,
+        changes: changes || {},
+        affectedData: {
+          userId: currentUser?.uid || null,
+          userName: updatedData?.display_name || null,
+        },
+        metadata: {
+          ipAddress: ipAddress,
+          userAgent: deviceName,
+        },
+      };
+  
+      Object.keys(auditLogEntry.changes).forEach(
+        (key) =>
+          auditLogEntry.changes[key] === undefined &&
+          (auditLogEntry.changes[key] = null)
+      );
+  
+      await addDoc(collection(fs, "audit_logs"), auditLogEntry);
       setSnackbarMessage("Profile has been successfully updated.");
     } catch (error) {
       setSnackbarMessage("Failed to update profile. Please try again.");
@@ -123,7 +185,7 @@ function Profile() {
       setTimeout(() => setShowSnackbar(false), 3000);
     }
   };
-
+  
   if (!currentUser) {
     return <div>Loading...</div>;
   }
@@ -162,13 +224,20 @@ function Profile() {
                 />
               </div>
               <div className="form-group">
-                <label htmlFor="middle_name">Middle Name</label>
+                <label htmlFor="middle_name">Middle Initial</label>
                 <input
                   type="text"
                   id="middle_name"
                   name="middle_name"
                   value={userData.middle_name}
-                  onChange={handleChange}
+                  onChange={(e) => {
+                    const { value } = e.target;
+                    // Regex to allow only 1-2 uppercase letters
+                    if (/^[A-Z]{0,2}$/.test(value)) {
+                      handleChange(e); // Only call handleChange if input is valid
+                    }
+                  }}
+                  maxLength="2" // Limit input length to 2 characters
                 />
               </div>
               <div className="form-group">
@@ -189,17 +258,6 @@ function Profile() {
                   id="dob"
                   name="dob"
                   value={userData.dob}
-                  onChange={handleChange}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="phone">Phone</label>
-                <input
-                  type="text"
-                  id="phone"
-                  name="phone"
-                  value={userData.phone}
                   onChange={handleChange}
                   required
                 />

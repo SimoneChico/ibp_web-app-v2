@@ -13,6 +13,8 @@ import { fs, auth } from "../../Config/Firebase";
 import ibpLogo from "../../Assets/img/ibp_logo.png";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faVideo, faCheck } from "@fortawesome/free-solid-svg-icons"; // Import the video icon
+import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { useNavigate } from "react-router-dom";
 
 const localizer = momentLocalizer(moment);
 
@@ -25,7 +27,20 @@ function ApptsCalendar() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentImageUrl, setCurrentImageUrl] = useState("");
   const [isRescheduleHistoryOpen, setIsRescheduleHistoryOpen] = useState(false);
+  const navigate = useNavigate();
+  const auth = getAuth();
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        // If user is not authenticated, redirect to the login page
+        navigate("/");
+      }
+    });
+
+    return () => unsubscribe(); // Clean up the listener on component unmount
+  }, [auth, navigate]);
+  
   const toggleRescheduleHistory = () => {
     setIsRescheduleHistoryOpen((prevState) => !prevState);
   };
